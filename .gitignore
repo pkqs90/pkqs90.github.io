@@ -1,0 +1,7 @@
+node_modules
+*.sh
+*.sketch
+
+npm-debug.log
+.deploy_git
+public
