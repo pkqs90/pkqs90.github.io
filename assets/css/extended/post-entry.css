@@ -1,3 +1,12 @@
 .first-entry {
     min-height: 32px;
 }
+
+.post-title {
+    margin-top: 20px;
+    margin-bottom: 20px;
+}
+
+.main {
+    max-width: calc(var(--main-width) + var(--gap) * 15);
+}
