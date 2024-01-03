@@ -128,7 +128,7 @@ This challenge is a comprehensive one that uses several techniques.
 
 The main buggy code is within the `upsert()` function.
 
-```js
+```solidity
 function upsert(uint256 index, uint256 timestamp) public payable {
     require(msg.sender == owner);
 
@@ -253,7 +253,7 @@ The function `AssumeOwmershipChallenge()` has a spelling mistake - anyone callin
 
 This challenge involves a classic reentrancy attack. The `withdraw()` function in the `TokenBankChallenge` contract is vulnerable to such attacks because it lacks a reentrancy guard, and the external call is made before the state update.
 
-Read [Checks-Effects-Interactions Pattern](https://docs.soliditylang.org/en/v0.6.11/security-considerations.html#use-the-checks-effects-interactions-pattern) for more details on reentrancy vulneribility.
+Read [Checks-Effects-Interactions Pattern](https://docs.soliditylang.org/en/v0.6.11/security-considerations.html#use-the-checks-effects-interactions-pattern) for more details on reentrancy vulnerability.
 
 The solution is simple: we can write a contract to perform another `withdraw()` within the `tokenFallback()` function.
 

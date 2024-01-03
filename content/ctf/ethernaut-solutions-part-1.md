@@ -9,6 +9,11 @@ tags: ["ctf"]
 
 [Ethernaut](https://ethernaut.openzeppelin.com/) is a Web3/Solidity based CTF developed by [OpenZeppelin](https://www.openzeppelin.com/). The CTF is played online using Ethereum test networks, but for faster development, I setup a local dev environment using hardhat forking Sepolia testnet. Comparing with Capture-the-Ether, Ethernaut is more up-to-date in aspects like Solidity versions (CTE uses ^0.4 versions) and DeFi-related content. I found Ethernaut to be highly educational and comprehensive, offering a thorough overview of smart contract security vulnerabilities.
 
+This is the Part 1 of Ethernaut Solution series:
+- Part 1 (Current)
+- [Part 2](../ethernaut-solutions-part-2)
+- [Part 3](../ethernaut-solutions-part-3)
+
 You can find all my solutions and local setup in this [GitHub repository](https://github.com/pkqs90/ethernaut-solutions).
 
 This post will cover solutions for challenges 0-9. These ten challenges are relatively straightforward, requiring only an understanding of Solidity language and some basic security patterns.
