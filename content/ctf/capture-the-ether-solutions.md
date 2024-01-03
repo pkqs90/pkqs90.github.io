@@ -1,6 +1,6 @@
 ---
 title: 'Capture the Ether Solutions'
-date: 2024-01-02T00:00:00+08:00
+date: 2024-01-01T00:00:00+08:00
 draft: false
 tags: ["ctf"]
 ---
