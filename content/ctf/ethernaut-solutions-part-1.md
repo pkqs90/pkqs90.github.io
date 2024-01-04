@@ -92,7 +92,7 @@ await tx.wait();
 
 ### 9. King
 
-This challenge demonstrates a classic DoS (Denial of Service) attack. By deploying a contract that reverts in its `receive()` function to claim the king's position, the challenge contract becomes unable to repay the ether, effectively making us the permanent king.
+This challenge demonstrates a classic DoS (Denial of Service) attack. By deploying a contract that does not implement the `receive()` function to claim the king's position, the challenge contract becomes unable to repay the ether, effectively making us the permanent king.
 
 The key lesson here is to be cautious with external calls from unknown sources, even for basic ether transfer calls. It's advised to establish a pull payment system rather than relying on push methods.
 

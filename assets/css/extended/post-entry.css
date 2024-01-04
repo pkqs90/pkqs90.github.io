@@ -10,3 +10,9 @@
 .main {
     max-width: calc(var(--main-width) + var(--gap) * 15);
 }
+
+.post-content code {
+    color: #e74c3c;
+    background: None;
+    padding: 0;
+}
