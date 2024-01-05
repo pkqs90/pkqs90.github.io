@@ -7,7 +7,7 @@ tags: ["ctf"]
 
 ## Introduction
 
-This is the Part 2 of Ethernaut Solution series:
+This is the Part 3 of Ethernaut Solution series:
 - [Part 1](../ethernaut-solutions-part-1)
 - [Part 2](../ethernaut-solutions-part-2)
 - Part 3 (Current)
