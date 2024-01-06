@@ -1,5 +1,5 @@
 ---
-title: 'Damn Vulnerable Defi V3 Solutions Part 1: 0-9'
+title: 'Damn Vulnerable Defi V3 Solutions Part 1: 1-5'
 date: 2024-01-05T15:45:33+08:00
 draft: false
 tags: ["ctf"]
