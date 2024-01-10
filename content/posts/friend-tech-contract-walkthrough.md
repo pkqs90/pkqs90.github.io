@@ -1,6 +1,6 @@
 ---
 title: 'Friend.tech Smart Contract Walkthrough'
-date: 2024-01-09T22:36:06+08:00
+date: 2024-01-10T13:57:06+08:00
 draft: false
 tags: ["socialfi", "smart contracts"]
 ---
@@ -118,7 +118,7 @@ contract FriendtechSharesV1 is Ownable {
 
 #### 2.2.1 Buy/Sell Shares
 
-The contract's code is straightforward, featuring two key functions for user interaction: `buyShares()` and `sellShares()``. These functions handle the calculation of price and fees, and process the transactions accordingly.
+The contract's code is straightforward, featuring two key functions for user interaction: `buyShares()` and `sellShares()`. These functions handle the calculation of price and fees, and process the transactions accordingly.
 
 It's important to note that in the `buyShares()` function, excess ETH sent beyond the required price isn't refunded. The frontend dapp can utilize functions like `getBuyPrice()`, `getSellPrice()`, `getBuyPriceAfterFee()`, and `getSellPriceAfterFee()` to accurately determine the necessary funds before transacting with the contract.
 
@@ -128,12 +128,11 @@ The contract incorporates two types of fees: a protocol fee and a subject fee. T
 
 #### 2.2.3 Ownership
 
-This contract inherits from `Ownable` and includes three key setter functions protected by this ownership: `setFeeDestination()`, `setProtocolFeePercent()`, and `setSubjectFeePercent()`. Notably, there's no safeguard in place for the range of fees, nor is there a use of a timelock. This allows the owner to freely adjust the fee percentages at any time. Such flexibility poses a significant risk of centralization; for instance, if the owner abruptly sets the `protocolFeePercent` to 1 ether, it could effectively lock all funds within the contract indefinitely.
+This contract inherits from `Ownable` and includes three key setter functions protected by this ownership: `setFeeDestination()`, `setProtocolFeePercent()`, and `setSubjectFeePercent()`. Notably, there's no safeguard in place for the range of fees, nor is there a use of a timelock. This allows the owner to freely adjust the fee percentages at any time. Such flexibility poses a significant risk of centralization. For instance, if the owner abruptly sets the `protocolFeePercent` to 1 ether, it could effectively lock all funds within the contract indefinitely.
 
-As of today 2024/01/10, there is approximately 15,000 ETH (~$35M), locked in this contract. Whoa.
+As of today 2024/01/10, there is approximately 15,000 ETH (~$35M) locked in this contract. Whoa.
 
 #### 2.2.4 Pricing
-
 
 The pricing strategy on Friend.tech's website states that "the cost of the next share equals S^2 / 16000 * 1 ether, where S represents the current number of keys". This pricing formula is evident in the `getPrice()` function of the smart contract. The function calculates the expected sum before and after buying tokens, using a delta for the price. The formula used is the sum of squares, given by 1^2 + 2^2 + ... n^2 = n * (n+1) * (2*n+1).
 
