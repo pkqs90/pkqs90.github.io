@@ -1,64 +1,63 @@
 ---
 title: 'Gnosis Safe Smart Contract Walkthrough'
-date: 2024-01-15T20:25:24+08:00
-draft: true
+date: 2024-01-18T21:20:00+08:00
+draft: false
 tags: ["security", "smart contracts"]
 ---
 
 ## 0. Preliminary Notes
 
-This is the second post of my dapp walkthrough series, focusing on Gnosis Safe. I chose Gnosis Safe because it is a core component of reNFT which I was auditing in this [Code4rena contest](https://code4rena.com/audits/2024-01-renft), and I spent quite some time going over it.
+In the second post of my dapp walkthrough series, I will be focusing on Gnosis Safe. This choice was inspired by my recent audit of reNFT for this [Code4rena contest](https://code4rena.com/audits/2024-01-renft), where Gnosis Safe was a significant element. The post will cover Gnosis Safe's architecture for [v1.4.1](https://github.com/safe-global/safe-contracts/tree/v1.4.1). I've also referred to the following articles about Gnosis Safe while writing this post:
 
-This post will go through the Gnosis Safe architecture and code. The code version will be [v1.4.1](https://github.com/safe-global/safe-contracts/tree/v1.4.1).
-
-Other than the codebase, I have also read a few articles talking about it. I'll just put them here as references.
 - https://hackmd.io/@kyzooghost/HJMi2Nllq
 - https://docs.safe.global
 - https://blog.wssh.trade/tags/safe/
 
 ## 1. What is Gnosis Safe?
 
-To put it simple, Gnosis Safe is a _multisigature_ wallet with _flexibility_. There can be multiple owners of the wallet, and setting a n-out-of-m scheme, where only n owners approving the transaction would make it work, reducing the vulnerability of a single private key being compromised. Also, it can setup modules to add custom features to the wallet (will talk about in below sections), e.g. setting a daily spending allowance that can be spent without the approval of other owners.
+To put it simple, Gnosis Safe is a **_multisigature_** wallet with **_flexibility_**. It allows for multiple owners, with the ability to establish an N-out-of-M scheme where transactions are approved with the consent of N owners. This design reduces the risk of a single private key being compromised. Additionally, Gnosis Safe supports custom modules, enhancing its functionality. For example, one could set a daily spending allowance that bypasses the need for multiple owner approvals.
 
 ## 2. Architecture
 
 ### 2.1 Signature Check
 
-Signature check is the most critical functionality of a multisig wallet. For Gnosis Safe wallets, it uses an n-out-of-m check, which means out of the `m` owners, only `n` owners signature is required for the wallet to execute the transaction.
+In Gnosis Safe wallets, the signature verification is a crucial feature. It operates on an N-out-of-M scheme, meaning that for a wallet with M owners, transactions can only be executed with the signatures of >=N owners.
 
 ![multisig](../multisig.png)
 
 ### 2.2 Proxy pattern
 
-Gnosis Safe uses the [EIP1167](https://eips.ethereum.org/EIPS/eip-1167) Minimal proxy pattern for deploying safe contracts. There are two instances requried before deploying a new Gnosis Safe Wallet, a ProxyFactory contract, and a master singleton contract. On Ethereum mainnet, we can find them here: [ProxyFactory](https://etherscan.io/address/0xa6b71e26c5e0845f74c812102ca7114b6a896ab2), [Singleton main contract](https://etherscan.io/address/0xa6b71e26c5e0845f74c812102ca7114b6a896ab2).
 
-The rationale for using the [EIP1167 Proxy Pattern](https://eips.ethereum.org/EIPS/eip-1167) is mainly for saving gas upon contract creation, because all the wallet contracts share the exact same logic, and contract creation is expensive, so the solution would be to deploy a dummy proxy contract for each safe and pointing to the single master copy. Recall that for the proxy pattern, all storage state (i.e. token balances) is stored in the proxy contract, and the proxy contract will delegatecall to implementation contract for logic execution.
+Gnosis Safe employs the [EIP1167](https://eips.ethereum.org/EIPS/eip-1167) Minimal Proxy Pattern for deploying its contracts. This process requires two key components: a ProxyFactory contract and a master singleton contract. On the Ethereum mainnet, these can be found at these addresses: [ProxyFactory](https://etherscan.io/address/0xa6b71e26c5e0845f74c812102ca7114b6a896ab2), [Singleton main contract](https://etherscan.io/address/0xa6b71e26c5e0845f74c812102ca7114b6a896ab2).
 
-This following diagram depicts the proxy pattern pretty well (source: https://hackmd.io/@kyzooghost/HJMi2Nllq).
+The use of the EIP1167 is primarily to save gas during contract creation, as it allows multiple proxy wallets to share the same logic. In this setup, each wallet is a proxy contract pointing to the master copy, with the proxy handling storage states and delegating logic execution to the implementation contract.
+
+The following diagram explains this proxy pattern. (source: https://hackmd.io/@kyzooghost/HJMi2Nllq).
 
 ![eip1167](../eip1167.png)
 
 ### 2.3 Safe Modules
 
-The most basic funtionality of the Gnosis safe wallet is its multisignature, i.e. requiring at least x owners signing the transaction for it to go through. To increase flexibility, Gnosis safe introduced the Modules concept.
+The core functionality of the Gnosis Safe wallet is its multisignature feature, necessitating a minimum number of owner signatures for transactions. To enhance this, Gnosis Safe introduces the Modules concept.
 
-Modules are smart contracts which add additional functionaly to the GnosisSafe contracts, while separating module logic from the Safe’s core contract. Note that a basic safe does not require any modules and can work perfectly fine. A simple example is to setup daily spending allowances, amounts that can be spent without the approval of other owners.
+Modules are smart contracts that add extra functionality to Gnosis Safe contracts, allowing for a separation of module logic from the Safe's main contract. It's important to note that a basic Safe can operate effectively without any modules. An example of module is setting daily spending allowances, enabling expenses without needing consensus from all owners.
 
-The modules architecture is as follows (from official documents: https://docs.safe.global/safe-smart-account/modules )
+The following diagram explains the Modules architecture (from official documents: https://docs.safe.global/safe-smart-account/modules).
 
 ![modules](../modules.png)
 
-The left-upper "Safe Account" refers to the proxy wallet we have been talking about. Setting up and disable a module for a wallet would require the transaction sender be the wallet it self (will talk about authorization below). A wallet can have up to infinite modules, each module is an external contract.
+The "Safe Account" in the upper-left represents the proxy wallet. When setting up or disabling a module for a wallet, the action must originate from the wallet itself. A wallet can support numerous modules, each being an external contract.
 
-The dataflow is: the external module calls the `execTransactionFromModule()` function of the wallet and the wallet would execute the transaction while bypassing its n-out-of-m signature checks for normal `execTransaction()` calls by non-modules, which means the authorization logic would fall inside the module itself.
+In terms of data flow, an external module invokes the `execTransactionFromModule()` function of the wallet. This allows the wallet to process the transaction while bypassing the standard N-out-of-M signature checks applicable to regular `execTransaction()` calls. The authorization logic, in this case, is embedded within the module itself.
 
 ### 2.4 Guards
 
-Safe guards are used for further restrictions on top of the n-out-of-m scheme. If a guard is setup, for every transaction going out of the wallet, it would need to pass the guard check. The following diagram depicts the dataflow (from official documents: https://docs.safe.global/safe-smart-account/guards).
+
+Safe Guards in Gnosis Safe are meant for adding extra layers of security on top of the N-out-of-M scheme. When a Guard is implemented, every outgoing transaction from the wallet must pass the Guard's checks. They can be used for specific purposes like preventing the transfer of certain NFTs or ERC20 tokens. However, it's crucial to note that Guards hold significant power, potentially leading to a denial of service or completely locking the safe (e.g., by reverting all transactions). Therefore, thoroughly auditing the Guard's code is essential before its implementation.
+
+The following diagram explains the Guard dataflow (from official documents: https://docs.safe.global/safe-smart-account/guards).
 
 ![guards](../guards.png)
-
-A simple use case for the guard would be banning the safe to transfer a specific NFT or ERC20 token. However, it is also important to understand that a safe guard has the full power to cause a denial of service for the safe, and completely bricking it (e.g. simply revert on all transactions). So it is critical to audit the guard code before setting it.
 
 ## 3. Code walkthrough
 
@@ -66,11 +65,11 @@ A simple use case for the guard would be banning the safe to transfer a specific
 
 #### 3.1.1 Deployment
 
-As mentioned above, deploying a safe wallet requires the proxy factory and a master singleton contract. The code for deployment can be found [here](https://github.com/safe-global/safe-contracts/blob/v1.4.1/contracts/proxies/SafeProxyFactory.sol#L19-L57). In this code, there are three arguments that needs to be passed in:
+Deploying a Gnosis Safe wallet involves the Proxy Factory and a master singleton contract. The deployment process is outlined in the [SafeProxyFactory.sol](https://github.com/safe-global/safe-contracts/blob/v1.4.1/contracts/proxies/SafeProxyFactory.sol#L19-L57) contract code, where three key arguments are required:
 
-1. `_singleton`, which would be the master implementation contract address for the proxy wallet.
-2. `saltNonce`, which is the salt value used for create2.
-3. `initializer`, which is the payload used to initialize the proxy wallet after it is deployed.
+- `_singleton`: This is the address of the master implementation contract for the proxy wallet.
+- `saltNonce`: A salt value used in the create2 deployment process.
+- `initializer`: The initialization payload for setting up the proxy wallet post-deployment.
 
 ```sol
 /**
@@ -114,7 +113,7 @@ function createProxyWithNonce(address _singleton, bytes memory initializer, uint
 }
 ```
 
-Note that the deployment uses the creation code for the contract `SafeProxy`. This is the proxy wallet contract which is only responsible for delegating calls to the main implementation contract.
+The deployment process for a Gnosis Safe wallet utilizes the `SafeProxy` contract's creation code. This `SafeProxy` contract is the proxy wallet, responsible solely for delegating calls to the main implementation contract.
 
 ```sol
 contract SafeProxy {
@@ -155,14 +154,14 @@ contract SafeProxy {
 
 #### 3.1.2 Setup
 
-The code for a wallet setup can be found [here](https://github.com/safe-global/safe-contracts/blob/v1.4.1/contracts/Safe.sol#L82-L117). This function can be only called once, and it is usually called along with the deployment as the `initializer` payload. We can see the setup performs the following steps:
+The setup process for a Gnosis Safe wallet can be found in the [Safe.sol](https://github.com/safe-global/safe-contracts/blob/v1.4.1/contracts/Safe.sol#L82-L117) contract. This setup function, typically part of the initializer payload during deployment, is designed to be called only once. It includes the following steps:
 
 1. Setup owners. This is easy to understand, because the wallet would require a list of owners and a minimum number of approvals threshold for approving a transaction.
 2. Setup fallback handler. This is used for a wallet for handling non-wallet fallback calls (e.g. ERC721's `onERC721Received`.)
 3. Setup modules. It uses a delegate call to external contract for setting up external modules, so care should be taken.
 4. Handle payment. This is for repaying a third party for helping setup the wallet.
 
-Note that fallbacks and modules can be still setup after intialization, so it is not required to set them here. We will talk about the specific code used in each step in details in the next section.
+Notably, fallbacks and modules can be configured post-initialization, so it's not mandatory to set them during the setup phase. The upcoming section will delve deeper into the specifics of each step.
 
 ```
 /**
@@ -207,9 +206,11 @@ function setup(
 
 #### 3.2.1 OwnerManager
 
-The wallet inherits the `OwnerManager` contract for owner logic handling. Related code can be found [here](https://github.com/safe-global/safe-contracts/blob/v1.4.1/contracts/base/OwnerManager.sol). Basically what it does is maintain a group of owner addresses, and a `threshold` value, indicating the minimum amount of owner approvals requried for executing a transaction.
+The wallet inherits the `OwnerManager` contract for managing owner-related logic, as seen in their [OwnerManager.sol](https://github.com/safe-global/safe-contracts/blob/v1.4.1/contracts/base/OwnerManager.sol). This contract efficiently handles a group of owner addresses and a threshold value, which determines the minimum number of approvals needed for a transaction.
 
-What is interesting is how the contract maintains this group of owner address. We know that in Solidity, there is no handy data structure such as a set or map, but we still want to perform insert/delete/query in O(1) time. Gnosis safe uses a single directed linked list for this, and the owners are structured like: `SENTINEL_OWNERS (0x1) -> owner0 -> owner1 -> owner2 -> ... -> ownerx -> SENTINEL_OWNERS(0x1)`. The downside for this is that when removing an owner, we would need to know the previous owner that is pointing to it, as stated in the `removeOwner()` function. However, this can be maintained offchain, and there is usually a relay service to do this.
+What is interesting is how the contract maintains this group of owner address. We know that in Solidity, there is no handy data structure such as a set or map, but we still want to perform insert/delete/query in O(1) time. Gnosis safe uses a single directed linked list for this, and the owners are structured like: `SENTINEL_OWNERS (0x1) -> owner0 -> owner1 -> owner2 -> ... -> ownerx -> SENTINEL_OWNERS(0x1)`. The downside is that when removing an owner, we would need to know the previous owner pointing to it, as stated in the `removeOwner()` function. However, this can be maintained offchain, and there is usually a relay service to do this.
+
+[OwnerManager.sol](https://github.com/safe-global/safe-contracts/blob/v1.4.1/contracts/base/OwnerManager.sol)
 
 ```sol
 /**
@@ -265,9 +266,10 @@ function removeOwner(address prevOwner, address owner, uint256 _threshold) publi
 
 #### 3.2.2 ModulesManager
 
-`ModulesManager` is pretty similar to `OwnerManager`, as it also uses a linked list for managing the module list. The interesting part is during the setup of a proxy wallet, which calls `setupModules()`, performs a delegate call to an external contract for module setup. This is quite handy, however delegate calls are often used for exploits so they require more security care.
+`ModulesManager` operates in a manner similar to `OwnerManager`, using a linked list for managing its modules. A notable aspect is the `setupModules()` function, used during the setup of a proxy wallet. It involves a delegate call to an external contract for module configuration. While this method is efficient, delegate calls are often associated with security risks and therefore require extra caution to ensure robust security measures are in place.
 
-```
+[ModuleManager.sol](https://github.com/safe-global/safe-contracts/blob/v1.4.1/contracts/base/ModuleManager.sol)
+```sol
 /**
  * @notice Setup function sets the initial storage of the contract.
  *         Optionally executes a delegate call to another contract to setup the modules.
@@ -287,9 +289,12 @@ function setupModules(address to, bytes memory data) internal {
 
 #### 3.2.3 GuardManager
 
-`GuardManager` is what handles the guard of the wallet. As introduced before, all normal transactions (except for the ones coming from a module) have to go pass the guard, and all actions that modify the wallet admin data (setting owners, modules, guards, etc.) has an `authorized` modifier, which requires the transaction to come from the wallet itself. This means that if the guard is poorly implemented, it may brick the entire safe wallet.
 
-SelfAuthorized.sol
+The `GuardManager` in the Gnosis Safe wallet is responsible for managing its Guard system. As mentioned earlier, all standard transactions, except those originating from modules, must pass through this guard. Additionally, actions that alter administrative data of the wallet, like setting owners, modules, guards, etc., are protected by an `authorized` modifier, ensuring these transactions originate from the wallet itself.
+
+Again, it's crucial to note that a poorly implemented guard could potentially brick the entire safe wallet, illustrating the importance of rigorous implementation and testing of the guard functionality.
+
+[SelfAuthorized.sol](https://github.com/safe-global/safe-contracts/blob/v1.4.1/contracts/common/SelfAuthorized.sol)
 ```sol
 abstract contract SelfAuthorized {
     function requireSelfCall() private view {
@@ -304,7 +309,7 @@ abstract contract SelfAuthorized {
 }
 ```
 
-GuardManager.sol
+[GuardManager.sol](https://github.com/safe-global/safe-contracts/blob/v1.4.1/contracts/base/GuardManager.sol)
 ```sol
 /**
  * @dev Set a guard that checks transactions before execution
@@ -345,11 +350,13 @@ function getGuard() internal view returns (address guard) {
 
 #### 3.2.4 FallbackManager
 
-`FallbackManager` is also inherited by the safe wallet, and it is responsible for setting up a fallback contract for the wallet to forward all unhandled calls to it. This is especially useful for cases where some EIPs require that a contract must implement a certain function (e.g. [EIP721](https://eips.ethereum.org/EIPS/eip-721) for `onERC721Received()`).
+The `FallbackManager` in Gnosis Safe is tasked with setting up a fallback handler for forwarding all unhandled calls. It's particularly useful for complying with certain EIPs that mandate specific functions, like `onERC721Received()` for [EIP721](https://eips.ethereum.org/EIPS/eip-721).
 
-The fallback manager appends the `msg.sender` to the calldata so the recepient knows who was the original initiator of the transaction. However, as you can read in the comments of the `internalSetFallbackHandler()`, this may cause another interesting issue due to how solidity handles function signatures. An attacker may craft a 3 byte function signature (e.g. `0x123456`) call to the wallet, and the fallback manager would append the attacker address as calldata (e.g. `0x7890123..`), then by appending them it would create a new function call to the fallback contract with the function signature `0x12345678`. If the fallback contract was pointing as the safe itself, then this signature may be a function protected by the `authorized` modifier, which means the attacker can easily call a protected function, thus the reason to banning the fallback handler to be set to the contract itself.
+The manager appends `msg.sender` to the calldata, informing the recipient of the transaction's initiator. However, there's a potential security concern: an attacker could exploit the way Solidity processes function signatures, potentially calling protected functions within the wallet. This risk necessitates caution in setting the fallback handler, particularly avoiding setting it as the safe itself. 
 
-FallbackManager.sol
+For example, the attacker may craft a 3 byte function signature (e.g. `0x123456`) call to the wallet, and the fallback manager would append the attacker address as calldata (e.g. `0x7890123..`), then by concatenating them it would create a new function call to the fallback contract with the function signature `0x12345678`. 
+
+[FallbackManager.sol](https://github.com/safe-global/safe-contracts/blob/v1.4.1/contracts/base/FallbackManager.sol)
 ```sol
 abstract contract FallbackManager is SelfAuthorized {
     event ChangedFallbackHandler(address indexed handler);
@@ -434,11 +441,11 @@ There are two ways for initiating a transaction from the wallet: `execTransactio
 #### 3.3.1 execTransaction
 
 This is the most common way of initiating a transaction. What it does is quite straightforward:
-1. Check that the transaction is signed by at least `_threshold` owners
-2. Pass the guard to verify the transaction
-3. Handle payments (will talk about in next section)
+1. Check the transaction is signed by at least `_threshold` owners.
+2. Pass the guard to verify the transaction.
+3. Handle payments (will talk about in next section).
 
-```
+```sol
 /** @notice Executes a `operation` {0: Call, 1: DelegateCall}} transaction to `to` with `value` (Native Currency)
  *          and pays `gasPrice` * `gasLimit` in `gasToken` token to `refundReceiver`.
  * @dev The fees are always transferred, even if the user transaction fails.
@@ -546,7 +553,7 @@ function execTransaction(
 
 #### 3.3.2 execTransactionFromModule
 
-This function should be only called from modules that are enabled for this wallet. Notice how this function does NOT check for signatures and does NOT pass the guard verification, so it increases flexibility. However, this also means modules should be carefully crafted, or else the wallet is at risk.
+This function is intended for use solely by authorized modules of the wallet. It bypasses signature checks and guard verifications, offering increased flexibility. However, this aspect also necessitates that modules be meticulously developed. Inadequately crafted modules could pose significant security risks to the wallet, highlighting the need for rigorous design and testing in module development.
 
 ```sol
 /**
@@ -575,11 +582,10 @@ function execTransactionFromModule(
 
 ### 3.4 Handle Payments
 
-In the previous sections, we saw there is payment handling logic during both the setup and execution phases. The rationale is mainly for compensating gas fees:
-1. During setup, this helps people who might not have enough Ether or who find the process complex. They can get help from relay services who set up the Safe for them and then pay them either with Ether or other tokens. This makes it easier for more people to start using Gnosis Safe. 
-2. In the execution phase, the payment mechanism also provides the mechanism for compensating gas fees for the transaction executor, since Gnosis safe is a multi-signature model, so the execution may be useful for a lot of people.
+In Gnosis Safe, the payment logic during setup and execution primarily addresses gas fee compensation.
 
-The comment within the code explains the calculation of gas fees pretty well, basically what the code does is it calculates the amount of gas that was used during the transaction, and sends it back to the `refundReceiver`.
+1. During setup phase, it aids users with insufficient Ether or those finding the setup complex, allowing them to use relay services. These services set up the Safe and receive payment in Ether or other tokens, simplifying access for more users.
+2. During execution phase, this mechanism compensates for gas fees of the transaction executor. The code calculates the used gas amount and reimburses it to the refundReceiver, as detailed in the comments within the code.
 
 ```sol
 /**
@@ -612,7 +618,7 @@ function handlePayment(
 
 ### 3.5 Check Signatures
 
-The last section of this walkthrough is how gnosis safe verifies signatures. Recall that signature verification is used while performing the `execTransaction()`, as it requires at least `threshold` amount of owners approving it. The entire signature verification process can be found in the `checkNSignatures()` function. Judging from the if-else clauses, there are 4 different ways for signing a signature, and they are separated by the `v` value of the signature.
+The final part of this Gnosis Safe walkthrough is on signature verification, crucial for the `execTransaction()` process which requires a minimum number of owner approvals. The `checkNSignatures()` function details the entire verification process. From its if-else clauses, it's evident that there are four distinct methods of signing, differentiated by the `v` value of the signature.
 
 ```sol
 /**
@@ -697,12 +703,11 @@ function approveHash(bytes32 hashToApprove) external {
     approvedHashes[msg.sender][hashToApprove] = 1;
     emit ApproveHash(hashToApprove, msg.sender);
 }
-
 ```
 
 #### 3.5.1 v == 0
 
-This is a contract signature, where the owner is a smart contract instead of an EOA. It implements the EIP1271, where the contract should return a `EIP1271_MAGIC_VALUE` when it is verified with `isValidSignature(data, contractSignature)`. In this scenario, the `contractSignature` is dynamically long and is appended to the back of `signatures`. What the yul assembly does is it loads the `contractSignature` and calls the contract owner for verification.
+This is a contract signature, where the owner is a smart contract instead of an EOA. It follows the [EIP1271](https://eips.ethereum.org/EIPS/eip-1271) standard, where the contract should return a `EIP1271_MAGIC_VALUE` when it is verified with `isValidSignature(hash, signature)`. In this scenario, the `contractSignature` is dynamically long and is appended to the back of `signatures`. What the assembly code does is it loads the `contractSignature` and calls the contract owner for verification.
 
 #### 3.5.2 v == 1
 
@@ -715,3 +720,7 @@ This is the classic ECDSA signature. We simply use `ecrecover` to recover the me
 #### 3.5.4 v > 30
 
 This signature uses `eth_sign` for signing, which adds a `\x19Ethereum Signed Message:\n32` to the prefix and runs a `keccak256` again before using ECDSA for signing.
+
+## 4. Summary
+
+This comprehensive walkthrough has covered most aspects of Gnosis Safe, delving into its architecture, use cases, and a range of features like the proxy pattern, modules, guards, and more. We've also talked about intricacies such as payment handling and the nuances of signature verification, providing a detailed view of Gnosis Safe's functionality.
